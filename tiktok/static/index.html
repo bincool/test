@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"/>
+  <title>TikTok Live Dashboard</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.1/dist/css/bootstrap.min.css" rel="stylesheet"/>
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.1/dist/js/bootstrap.bundle.min.js"></script>
+  <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+  <style>
+    body { padding: 1rem; }
+    .panel { height: 250px; overflow-y: auto; }
+  </style>
+</head>
+<body class="container">
+  <h1 class="mb-4">TikTok Live 实时看板</h1>
+
+  <!-- 第一行：输入 (8) + 钻石 (4) -->
+  <div class="row mb-4">
+    <div class="col-md-8">
+      <div class="input-group">
+        <input id="targetInput" type="text" class="form-control"
+               placeholder="输入 @用户名 或 完整直播 URL"/>
+        <button id="listenBtn" class="btn btn-primary">开始监听</button>
+        <span class="input-group-text" id="currentTarget">未监听</span>
+      </div>
+    </div>
+    <div class="col-md-4">
+      <div class="card text-center">
+        <div class="card-header">💎 累计钻石</div>
+        <div class="card-body"><h2 id="diamonds">0</h2></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 第二行：评论 (8) + 礼物 (4) -->
+  <div class="row g-3 mb-4">
+    <div class="col-md-6">
+      <div class="card">
+        <div class="card-header">💬 最新评论</div>
+        <div class="card-body panel">
+          <ul id="comments" class="list-unstyled mb-0"></ul>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-6">
+      <div class="card">
+        <div class="card-header">🎁 送礼记录</div>
+        <div class="card-body panel">
+          <ul id="gifts" class="list-unstyled mb-0"></ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 第三行：进房 (6) + 关注 (6) -->
+  <div class="row g-3 mb-4">
+    <div class="col-md-6">
+      <div class="card">
+        <div class="card-header">🚪 新进房</div>
+        <div class="card-body panel">
+          <ul id="joins" class="list-unstyled mb-0"></ul>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-6">
+      <div class="card">
+        <div class="card-header">➕ 新增关注</div>
+        <div class="card-body panel">
+          <ul id="follows" class="list-unstyled mb-0"></ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const socket = io("http://localhost:8000", { path: "/ws/socket.io" });
+    const COMMENT_LIMIT = 100, JOIN_LIMIT = 50, FOLLOW_LIMIT = 50;
+    let alertAudioMap = {}, giftNameMap = {};
+
+    // 禁用缓存加载 JSON 配置
+    fetch('/static/alert_gifts.json', { cache: 'no-store' })
+      .then(r => r.json())
+      .then(cfg => {
+        cfg.alertGifts.forEach(({gift_id,audio_src}) => {
+          const a = document.createElement('audio');
+          a.id = `audio-${gift_id}`; a.src = audio_src;
+          document.body.appendChild(a);
+          alertAudioMap[gift_id] = a;
+        });
+      });
+
+    fetch('/static/gift_names.json', { cache: 'no-store' })
+      .then(r => r.json())
+      .then(cfg => { giftNameMap = cfg; });
+
+    // 切换监听目标
+    document.getElementById("listenBtn").onclick = async () => {
+      const tgt = document.getElementById("targetInput").value.trim();
+      if (!tgt) return alert("请输入目标");
+      const res = await fetch("/api/listen", {
+        method: "POST", headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({target:tgt})
+      });
+      const j = await res.json();
+      document.getElementById("currentTarget").innerText = j.listening;
+      ["comments","gifts","joins","follows"].forEach(id => {
+        document.getElementById(id).innerHTML = "";
+      });
+      document.getElementById("diamonds").innerText = "0";
+    };
+
+    // 评论
+    socket.on("comment", data => {
+      const ul = document.getElementById("comments");
+      const li = document.createElement("li");
+      li.textContent = `${data.nickname}: ${data.comment}`;
+      ul.prepend(li);
+      if (ul.children.length > COMMENT_LIMIT) ul.removeChild(ul.lastChild);
+    });
+
+    // 普通礼物
+    socket.on("gift", data => {
+      if (alertAudioMap[data.gift_id]) alertAudioMap[data.gift_id].play().catch(()=>{});
+      const name = giftNameMap[data.gift_id]||data.gift_name;
+      const ul   = document.getElementById("gifts");
+      const li   = document.createElement("li");
+      li.textContent = `${data.nickname} → ${name} x${data.count} (钻石: ${data.diamond})`;
+      ul.prepend(li);
+    });
+
+    // 连击礼物
+    socket.on("combo_gift", data => {
+      if (alertAudioMap[data.gift_id]) alertAudioMap[data.gift_id].play().catch(()=>{});
+      const name = giftNameMap[data.gift_id]||data.gift_name;
+      const ul   = document.getElementById("gifts");
+      const li   = document.createElement("li");
+      li.classList.add("text-warning");
+      li.textContent = `${data.nickname} → ${name} 连击 ${data.combo_count} 次 (钻石: ${data.combo_diamond})`;
+      ul.prepend(li);
+    });
+
+    // 钻石总数更新
+    socket.on("diamonds", d => {
+      document.getElementById("diamonds").innerText = d.total_diamonds;
+    });
+
+    // 进房
+    socket.on("join", data => {
+      const ul = document.getElementById("joins");
+      const li = document.createElement("li");
+      li.textContent = `${data.nickname} 进入直播间`;
+      ul.prepend(li);
+      if (ul.children.length > JOIN_LIMIT) ul.removeChild(ul.lastChild);
+    });
+
+    // 关注
+    socket.on("follow", data => {
+      const ul = document.getElementById("follows");
+      const li = document.createElement("li");
+      li.textContent = `${data.nickname} 关注了`;
+      ul.prepend(li);
+      if (ul.children.length > FOLLOW_LIMIT) ul.removeChild(ul.lastChild);
+    });
+  </script>
+</body>
+</html>
